@@ -2009,5 +2009,164 @@ fn merge_directive(
     }
 }
 
+
+fn merge_repeatable_directives(
+    existing: &[DirectiveDefinition],
+    new_defs: &[DirectiveDefinition],
+) -> Vec<DirectiveDefinition> {
+    let mut result = existing.to_vec();
+
+    for new_dir in new_defs {
+        if let Some(pos) = result.iter().position(|d| d.name == new_dir.name) {
+            if !new_dir.repeatable {
+                result[pos] = new_dir.clone();
+            } else {
+                result.push(new_dir.clone());
+            }
+        } else {
+            result.push(new_dir.clone());
+        }
+    }
+
+    result
+}
+
 #[cfg(test)]
-mod tests;
+mod tests {
+    use super::*;
+    use apollo_compiler::name;
+    use apollo_compiler::Node;
+
+    #[test]
+    fn test_merge_repeatable_directives() {
+        let existing = vec![
+            DirectiveDefinition {
+                name: name!("deprecated"),
+                description: None,
+                arguments: vec![],
+                locations: vec![DirectiveLocation::FieldDefinition],
+                repeatable: false,
+            },
+            DirectiveDefinition {
+                name: name!("tag"),
+                description: None,
+                arguments: vec![],
+                locations: vec![DirectiveLocation::FieldDefinition],
+                repeatable: true,
+            },
+        ];
+
+        let new_defs = vec![
+            DirectiveDefinition {
+                name: name!("deprecated"),
+                description: Some("Updated deprecation".to_string().into()),
+                arguments: vec![],
+                locations: vec![DirectiveLocation::FieldDefinition],
+                repeatable: false,
+            },
+            DirectiveDefinition {
+                name: name!("tag"),
+                description: Some("Another tag".to_string().into()),
+                arguments: vec![],
+                locations: vec![DirectiveLocation::FieldDefinition],
+                repeatable: true,
+            },
+            DirectiveDefinition {
+                name: name!("custom"),
+                description: None,
+                arguments: vec![],
+                locations: vec![DirectiveLocation::FieldDefinition],
+                repeatable: false,
+            },
+        ];
+
+        let result = merge_repeatable_directives(&existing, &new_defs);
+
+        assert_eq!(result.len(), 4);
+
+        let deprecated_count = result.iter().filter(|d| d.name == name!("deprecated")).count();
+        assert_eq!(deprecated_count, 1);
+
+        let deprecated_dir = result.iter().find(|d| d.name == name!("deprecated")).unwrap();
+        assert_eq!(
+            deprecated_dir.description,
+            Some("Updated deprecation".to_string().into())
+        );
+
+        let tag_count = result.iter().filter(|d| d.name == name!("tag")).count();
+        assert_eq!(tag_count, 2);
+
+        let custom_count = result.iter().filter(|d| d.name == name!("custom")).count();
+        assert_eq!(custom_count, 1);
+    }
+
+    #[test]
+    fn test_merge_empty_lists() {
+        let result = merge_repeatable_directives(&[], &[]);
+        assert_eq!(result.len(), 0);
+    }
+
+    #[test]
+    fn test_merge_with_empty_existing() {
+        let new_defs = vec![DirectiveDefinition {
+            name: name!("test"),
+            description: None,
+            arguments: vec![],
+            locations: vec![DirectiveLocation::FieldDefinition],
+            repeatable: false,
+        }];
+
+        let result = merge_repeatable_directives(&[], &new_defs);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, name!("test"));
+    }
+
+    #[test]
+    fn test_merge_with_empty_new() {
+        let existing = vec![DirectiveDefinition {
+            name: name!("test"),
+            description: None,
+            arguments: vec![],
+            locations: vec![DirectiveLocation::FieldDefinition],
+            repeatable: false,
+        }];
+
+        let result = merge_repeatable_directives(&existing, &[]);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, name!("test"));
+    }
+
+    #[test]
+    fn test_multiple_repeatable_directives() {
+        let existing = vec![
+            DirectiveDefinition {
+                name: name!("tag"),
+                description: Some("Tag 1".to_string().into()),
+                arguments: vec![],
+                locations: vec![DirectiveLocation::FieldDefinition],
+                repeatable: true,
+            },
+            DirectiveDefinition {
+                name: name!("tag"),
+                description: Some("Tag 2".to_string().into()),
+                arguments: vec![],
+                locations: vec![DirectiveLocation::FieldDefinition],
+                repeatable: true,
+            },
+        ];
+
+        let new_defs = vec![DirectiveDefinition {
+            name: name!("tag"),
+            description: Some("Tag 3".to_string().into()),
+            arguments: vec![],
+            locations: vec![DirectiveLocation::FieldDefinition],
+            repeatable: true,
+        }];
+
+        let result = merge_repeatable_directives(&existing, &new_defs);
+
+        let tag_count = result.iter().filter(|d| d.name == name!("tag")).count();
+        assert_eq!(tag_count, 3);
+        assert_eq!(result.len(), 3);
+    }
+}

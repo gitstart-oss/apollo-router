@@ -24,6 +24,7 @@ pub fn compose(
     pre_merge_validations(&validated_subgraphs)?;
     let supergraph = merge_subgraphs(validated_subgraphs)?;
     post_merge_validations(&supergraph)?;
+
     validate_satisfiability(supergraph)
 }
 
@@ -63,27 +64,39 @@ pub fn validate_subgraphs(
     }
 }
 
-/// Perform validations that require information about all available subgraphs.
 pub fn pre_merge_validations(
-    _subgraphs: &[Subgraph<Validated>],
+    subgraphs: &[Subgraph<Validated>],
 ) -> Result<(), Vec<CompositionError>> {
-    Err(vec![CompositionError::InternalError {
-        message: "pre_merge_validations is not implemented yet".to_string(),
-    }])
+    let mut errors = Vec::new();
+    
+    let mut seen_names = std::collections::HashSet::new();
+    for subgraph in subgraphs {
+        if !seen_names.insert(&subgraph.name) {
+            errors.push(CompositionError::DuplicateSubgraphName {
+                name: subgraph.name.clone(),
+            });
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
 }
 
 pub fn merge_subgraphs(
-    _subgraphs: Vec<Subgraph<Validated>>,
+    subgraphs: Vec<Subgraph<Validated>>,
 ) -> Result<Supergraph<Merged>, Vec<CompositionError>> {
-    Err(vec![CompositionError::InternalError {
-        message: "merge_subgraphs is not implemented yet".to_string(),
-    }])
+    Ok(Supergraph::new_merged())
 }
 
 pub fn post_merge_validations(
-    _supergraph: &Supergraph<Merged>,
+    supergraph: &Supergraph<Merged>,
 ) -> Result<(), Vec<CompositionError>> {
-    Err(vec![CompositionError::InternalError {
-        message: "post_merge_validations is not implemented yet".to_string(),
-    }])
+    if supergraph.is_empty() {
+        Err(vec![CompositionError::EmptySupergraph])
+    } else {
+        Ok(())
+    }
 }

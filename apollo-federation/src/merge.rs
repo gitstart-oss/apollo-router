@@ -61,14 +61,14 @@ use crate::link::spec_definition::SpecDefinition;
 use crate::schema::ValidFederationSchema;
 use crate::subgraph::ValidSubgraph;
 
-type MergeWarning = String;
 type MergeError = String;
+type MergeWarning = String;
 
 struct Merger {
     errors: Vec<MergeError>,
-    composition_hints: Vec<MergeWarning>,
     needs_inaccessible: bool,
     interface_objects: IndexSet<Name>,
+    composition_hints: Vec<MergeWarning>,
 }
 
 pub struct MergeSuccess {
@@ -128,9 +128,9 @@ pub fn merge_federation_subgraphs(
 impl Merger {
     fn new() -> Self {
         Merger {
-            composition_hints: Vec::new(),
             errors: Vec::new(),
             needs_inaccessible: false,
+            composition_hints: Vec::new(),
             interface_objects: IndexSet::default(),
         }
     }
@@ -140,9 +140,11 @@ impl Merger {
             .into_iter()
             .map(|(_, subgraph)| subgraph)
             .collect_vec();
+
         subgraphs.sort_by(|s1, s2| s1.name.cmp(&s2.name));
         let mut subgraphs_and_enum_values = Vec::new();
         let mut enum_values = IndexSet::default();
+
         for subgraph in &subgraphs {
             let enum_value = match EnumValue::new(&subgraph.name) {
                 Ok(enum_value) => enum_value,
@@ -162,6 +164,7 @@ impl Merger {
             enum_values.insert(enum_value.0.to_string());
             subgraphs_and_enum_values.push((subgraph, enum_value))
         }
+        
         if !self.errors.is_empty() {
             return Err(MergeFailure {
                 schema: None,

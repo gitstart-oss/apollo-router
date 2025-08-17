@@ -121,6 +121,13 @@ impl Supergraph<Merged> {
     }
 
     #[allow(unused)]
+    pub fn new_with_hints(schema: Valid<Schema>, hints: Vec<CompositionHint>) -> Self {
+        Self {
+            state: Merged { schema, hints },
+        }
+    }
+
+    #[allow(unused)]
     pub(crate) fn subgraph_name_to_graph_enum_value(
         &self,
     ) -> Result<IndexMap<String, Name>, FederationError> {

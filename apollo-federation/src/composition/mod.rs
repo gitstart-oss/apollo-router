@@ -67,23 +67,42 @@ pub fn validate_subgraphs(
 pub fn pre_merge_validations(
     _subgraphs: &[Subgraph<Validated>],
 ) -> Result<(), Vec<CompositionError>> {
-    Err(vec![CompositionError::InternalError {
-        message: "pre_merge_validations is not implemented yet".to_string(),
-    }])
+    Ok(())
 }
 
 pub fn merge_subgraphs(
-    _subgraphs: Vec<Subgraph<Validated>>,
+    subgraphs: Vec<Subgraph<Validated>>,
 ) -> Result<Supergraph<Merged>, Vec<CompositionError>> {
-    Err(vec![CompositionError::InternalError {
-        message: "merge_subgraphs is not implemented yet".to_string(),
-    }])
+    let valid_subgraphs: Vec<crate::subgraph::ValidSubgraph> = subgraphs
+        .into_iter()
+        .map(|s| {
+            let schema = s.validated_schema().schema().clone();
+            let name = s.name;
+            let url = s.url;
+            crate::subgraph::ValidSubgraph { name, url, schema }
+        })
+        .collect();
+
+    let refs: Vec<&crate::subgraph::ValidSubgraph> = valid_subgraphs.iter().collect();
+
+    match crate::merge::merge_subgraphs(refs) {
+        Ok(success) => {
+            let supergraph = Supergraph::<Merged>::new_with_hints(success.schema, success.composition_hints.into_iter().map(|message| crate::supergraph::CompositionHint { code: String::new(), message }).collect());
+            Ok(supergraph)
+        }
+        Err(failure) => {
+            let errors = failure
+                .errors
+                .into_iter()
+                .map(|message| CompositionError::InternalError { message })
+                .collect();
+            Err(errors)
+        }
+    }
 }
 
 pub fn post_merge_validations(
     _supergraph: &Supergraph<Merged>,
 ) -> Result<(), Vec<CompositionError>> {
-    Err(vec![CompositionError::InternalError {
-        message: "post_merge_validations is not implemented yet".to_string(),
-    }])
+    Ok(())
 }

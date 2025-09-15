@@ -46,6 +46,7 @@ pub use self::subgraph::ValidFederationSubgraph;
 pub use self::subgraph::ValidFederationSubgraphs;
 use crate::ApiSchemaOptions;
 use crate::api_schema;
+use crate::error::CompositionError;
 use crate::error::FederationError;
 use crate::error::MultipleFederationErrors;
 use crate::error::SingleFederationError;
@@ -92,6 +93,31 @@ use crate::utils::FallibleIterator;
 pub struct Supergraph<S> {
     pub state: S,
 }
+///ola code
+pub struct SupergraphBuilder {
+    fragments: Vec<String>,
+}
+
+impl SupergraphBuilder {
+    pub fn new() -> Self {
+        Self {
+            fragments: Vec::new(),
+        }
+    }
+    pub fn add_subgraph_sdl(&mut self, sdl: &str) {
+        self.fragments.push(sdl.to_string());
+    }
+    pub fn finish(self) -> Result<Supergraph<Merged>, Vec<CompositionError>> {
+        let combined = self.fragments.join("\n\n");
+        match Schema::parse_and_validate(&combined, "supergraph.graphql") {
+            Ok(schema) => Ok(Supergraph::<Merged>::new(schema)),
+            Err(e) => Err(vec![CompositionError::InternalError {
+                message: format!("failed to parse combined supergraph SDL: {:?}", e),
+            }]),
+        }
+    }
+}
+///ola code
 
 impl Supergraph<Merged> {
     pub fn new(schema: Valid<Schema>) -> Self {

@@ -21,8 +21,6 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::vec;
-
-/// Toggle composition behavior (this mirrors JS `CompositionOptions`).
 pub struct CompositionOptions {
     pub run_satisfiability: bool,
 }
@@ -35,7 +33,6 @@ impl Default for CompositionOptions {
     }
 }
 
-/// Validate composition options (placeholder for rules like rejecting unsupported subtyping rules).
 fn validate_composition_options(_options: &CompositionOptions) -> Result<(), CompositionError> {
     // In the JS implementation there's a guard against "list_upgrade" being present in
     // TODO: FED-570, we might want to add similar guards here if we add more options.
@@ -43,35 +40,27 @@ fn validate_composition_options(_options: &CompositionOptions) -> Result<(), Com
     Ok(())
 }
 
-/// High-level compose function (convenience wrapper that runs satisfiability by default).
 pub fn compose_with_options(
     subgraphs: Vec<Subgraph<Initial>>,
     options: CompositionOptions,
 ) -> Result<Supergraph<Satisfiable>, Vec<CompositionError>> {
-    // Validate options early
     if let Err(e) = validate_composition_options(&options) {
         return Err(vec![e]);
     }
-
     let expanded_subgraphs = expand_subgraphs(subgraphs)?;
     let upgraded_subgraphs = upgrade_subgraphs_if_necessary(expanded_subgraphs)?;
     let validated_subgraphs = validate_subgraphs(upgraded_subgraphs)?;
-    // pre-merge checks
     pre_merge_validations(&validated_subgraphs)?;
-
     // merge
     let merged_supergraph = merge_subgraphs(validated_subgraphs)?;
-
     // post-merge validation of the merged SDL/schema
     post_merge_validations(&merged_supergraph)?;
     // If requested, run satisfiability checks and return a Satisfiable supergraph.
     if options.run_satisfiability {
         validate_satisfiability(merged_supergraph)
     } else {
-        // Try best-effort conversion to a Satisfiable supergraph without running the full satisfiability check.]
         match ValidFederationSchema::new(merged_supergraph.state.schema().clone()) {
             Ok(vfs) => {
-                // build Satisfiable supergraph with any hints (we don't currently have satisfiability hints here)
                 Ok(Supergraph::<Satisfiable>::new(vfs, Vec::<CompositionHint>::new()))
             }
             Err(e) => Err(vec![CompositionError::InternalError {
@@ -81,14 +70,12 @@ pub fn compose_with_options(
     }
 }
 
-/// Convenience: preserve prior default behavior (runs satisfiability).
+/// For Convenience: preserve prior default behavior (runs satisfiability).
 pub fn compose(subgraphs: Vec<Subgraph<Initial>>) -> Result<Supergraph<Satisfiable>, Vec<CompositionError>> {
     compose_with_options(subgraphs, CompositionOptions::default())
 }
 
-/// --- Subgraph lifecycle helpers (expand, validate) ---
 
-/// Populate default federation definitions / link imports for subgraphs.
 pub fn expand_subgraphs(
     subgraphs: Vec<Subgraph<Initial>>,
 ) -> Result<Vec<Subgraph<Expanded>>, Vec<CompositionError>> {
@@ -106,7 +93,7 @@ pub fn expand_subgraphs(
     }
 }
 
-/// Validate each subgraph (e.g., @key FieldSet checks).
+
 pub fn validate_subgraphs(
     subgraphs: Vec<Subgraph<Upgraded>>,
 ) -> Result<Vec<Subgraph<Validated>>, Vec<CompositionError>> {
@@ -124,7 +111,7 @@ pub fn validate_subgraphs(
     }
 }
 
-/// Pre-merge validations: duplicate/empty subgraph names etc.
+
 pub fn pre_merge_validations(subgraphs: &[Subgraph<Validated>]) -> Result<(), Vec<CompositionError>> {
     let mut errors: Vec<CompositionError> = Vec::new();
 
@@ -152,48 +139,6 @@ pub fn pre_merge_validations(subgraphs: &[Subgraph<Validated>]) -> Result<(), Ve
     }
 }
 
-
-/// --- Helpers to convert the validated Subgraph list into ValidFederationSubgraphs expected by the merger ---
-fn to_valid_federation_subgraph(sg: Subgraph<Validated>) -> Result<ValidFederationSubgraph, CompositionError> {
-    let validated_schema = sg.validated_schema().clone();
-    let name_string = sg.name;
-    let url_string = sg.url;
-        Ok(ValidFederationSubgraph {
-            name: name_string.clone(),
-            url: url_string,
-            schema: validated_schema,
-        })
-}
-
-fn vec_to_valid_federation_subgraphs(
-    validated_subgraphs: Vec<Subgraph<Validated>>,
-) -> Result<ValidFederationSubgraphs, Vec<CompositionError>> {
-    let mut map: BTreeMap<Arc<str>, ValidFederationSubgraph> = BTreeMap::new();
-    let mut errors: Vec<CompositionError> = Vec::new();
-
-    for sg in validated_subgraphs.into_iter() {
-        match to_valid_federation_subgraph(sg) {
-            Ok(vfs) => {
-                // Create Arc<str> key and insert
-                let key: Arc<str> = Arc::from(vfs.name.clone().into_boxed_str());
-                if map.insert(key.clone(), vfs).is_some() {
-                    errors.push(CompositionError::InternalError {
-                        message: format!("duplicate subgraph name '{}'", key),
-                    });
-                }
-            }
-            Err(e) => errors.push(e),
-        }
-    }
-
-    if errors.is_empty() {
-        Ok(ValidFederationSubgraphs { subgraphs: map })
-    } else {
-        Err(errors)
-    }
-}
-
-/// Merge validated subgraphs into a merged supergraph schema.
 pub fn merge_subgraphs(
     validated_subgraphs: Vec<Subgraph<Validated>>,
 ) -> Result<Supergraph<Merged>, Vec<CompositionError>> {
@@ -236,7 +181,6 @@ pub fn merge_subgraphs(
     }
 }
 
-/// Post-merge validations: run all quick validators on the merged schema; return combined errors.
 pub fn post_merge_validations(supergraph: &Supergraph<Merged>) -> Result<(), Vec<CompositionError>> {
     let fed_schema = match ValidFederationSchema::new(supergraph.state.schema().clone()) {
         Ok(s) => s,
@@ -278,12 +222,63 @@ pub fn post_merge_validations(supergraph: &Supergraph<Merged>) -> Result<(), Vec
 }
 
 
+
+
+
+
+
+
+
+
+
+
 /// ---------------------------------------------------------------------------
 /// --- Validators / helpers (SDL-based should look into AST) -------
 /// ---------------------------------------------------------------------------
 /// 
 /// 
 /// 
+/// 
+/// --- Helpers to convert the validated Subgraph list into ValidFederationSubgraphs expected by the merger ---
+fn to_valid_federation_subgraph(sg: Subgraph<Validated>) -> Result<ValidFederationSubgraph, CompositionError> {
+    let validated_schema = sg.validated_schema().clone();
+    let name_string = sg.name;
+    let url_string = sg.url;
+        Ok(ValidFederationSubgraph {
+            name: name_string.clone(),
+            url: url_string,
+            schema: validated_schema,
+        })
+}
+
+fn vec_to_valid_federation_subgraphs(
+    validated_subgraphs: Vec<Subgraph<Validated>>,
+) -> Result<ValidFederationSubgraphs, Vec<CompositionError>> {
+    let mut map: BTreeMap<Arc<str>, ValidFederationSubgraph> = BTreeMap::new();
+    let mut errors: Vec<CompositionError> = Vec::new();
+
+    for sg in validated_subgraphs.into_iter() {
+        match to_valid_federation_subgraph(sg) {
+            Ok(vfs) => {
+                // Create Arc<str> key and insert
+                let key: Arc<str> = Arc::from(vfs.name.clone().into_boxed_str());
+                if map.insert(key.clone(), vfs).is_some() {
+                    errors.push(CompositionError::InternalError {
+                        message: format!("duplicate subgraph name '{}'", key),
+                    });
+                }
+            }
+            Err(e) => errors.push(e),
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(ValidFederationSubgraphs { subgraphs: map })
+    } else {
+        Err(errors)
+    }
+}
+
 /// Return a mapping: type name -> set of field names for quick existence checks.
 fn get_type_fields_map_from_sdl(sdl: &str) -> HashMap<String, HashSet<String>> {
     let mut type_fields: HashMap<String, HashSet<String>> = HashMap::new();

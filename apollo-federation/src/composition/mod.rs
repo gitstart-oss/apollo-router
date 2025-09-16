@@ -65,25 +65,71 @@ pub fn validate_subgraphs(
 
 /// Perform validations that require information about all available subgraphs.
 pub fn pre_merge_validations(
-    _subgraphs: &[Subgraph<Validated>],
+    validated_subgraphs: &[Subgraph<Validated>],
 ) -> Result<(), Vec<CompositionError>> {
-    Err(vec![CompositionError::InternalError {
-        message: "pre_merge_validations is not implemented yet".to_string(),
-    }])
+    // Pre-merge validations - check for basic composition requirements
+    // this includes checking for any conflict between subgraphs that would prevent successful merging
+    if validated_subgraphs.is_empty() {
+        return Err(vec![CompositionError::InvalidGraphQL {
+            message: "Cannot compose an empty list of subgraphs".to_string(),
+        }]);
+    }
+
+    // Check for duplicate subgraph names
+    let mut seen_names = std::collections::HashSet::new();
+    for subgraph in validated_subgraphs {
+        if !seen_names.insert(&subgraph.name) {
+            return Err(vec![CompositionError::InvalidGraphQL {
+                message: format!("Duplicate subgraph name: {}", subgraph.name),
+            }]);
+        }
+    }
+    Ok(())
 }
 
-pub fn merge_subgraphs(
-    _subgraphs: Vec<Subgraph<Validated>>,
+fn merge_subgraphs(
+    validated_subgraphs: Vec<Subgraph<Validated>>,
 ) -> Result<Supergraph<Merged>, Vec<CompositionError>> {
-    Err(vec![CompositionError::InternalError {
-        message: "merge_subgraphs is not implemented yet".to_string(),
-    }])
+    use crate::merger::merge::CompositionOptions;
+
+    // Use the existing merger implementation
+    let options = CompositionOptions::default();
+    let merge_result = crate::merger::merge::merge_subgraphs(validated_subgraphs, options)
+        .map_err(|e| {
+            vec![CompositionError::InternalError {
+                message: format!("Merge failed: {}", e),
+            }]
+        })?;
+
+    if !merge_result.errors.is_empty() {
+        return Err(merge_result.errors);
+    }
+
+    match merge_result.supergraph {
+        Some(supergraph) => {
+            // Convert the Valid<FederationSchema> to Supergraph<Merged>
+            // This is a type state transition that indicates successful merging
+            let schema = supergraph.into_inner().into_inner();
+            Ok(Supergraph::<Merged>::new(
+                apollo_compiler::validation::Valid::assume_valid(schema),
+            ))
+        }
+        None => Err(vec![CompositionError::InternalError {
+            message: "Merge completed but no supergraph was produced".to_string(),
+        }]),
+    }
 }
 
-pub fn post_merge_validations(
-    _supergraph: &Supergraph<Merged>,
-) -> Result<(), Vec<CompositionError>> {
-    Err(vec![CompositionError::InternalError {
-        message: "post_merge_validations is not implemented yet".to_string(),
-    }])
+fn post_merge_validations(supergraph: &Supergraph<Merged>) -> Result<(), Vec<CompositionError>> {
+    // Post-merge validations - validate the merged supergraph
+    // Based on Node.js implementation, this includes checking the final schema below
+    let schema = supergraph.schema();
+
+    // Validate that we have a query root type (required by GraphQL spec)
+    if schema.schema_definition.query.is_none() {
+        return Err(vec![CompositionError::InvalidGraphQL {
+            message: "A valid schema must have a query root type".to_string(),
+        }]);
+    }
+    Ok(())
 }

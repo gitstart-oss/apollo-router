@@ -60,6 +60,64 @@ fn can_compose_supergraph() {
 }
 
 #[test]
+fn can_compose_valid_subgraphs() {
+    let s1 = Subgraph::parse_and_expand(
+        "Users",
+        "https://users",
+        r#"
+            type Query {
+                user(id: ID!): User
+            }
+
+            type User @key(fields: "id") {
+                id: ID!
+                name: String!
+            }
+        "#,
+    )
+    .unwrap();
+
+    let s2 = Subgraph::parse_and_expand(
+        "Products",
+        "https://products",
+        r#"
+            type Query {
+                product(id: ID!): Product
+            }
+
+            type Product @key(fields: "id") {
+                id: ID!
+                title: String!
+            }
+
+            type User @key(fields: "id") {
+                id: ID!
+                orders: [Product!]!
+            }
+        "#,
+    )
+    .unwrap();
+
+    let supergraph = Supergraph::compose(vec![&s1, &s2]).unwrap();
+    insta::assert_snapshot!(print_sdl(supergraph.schema.schema()));
+    insta::assert_snapshot!(print_sdl(
+        supergraph
+            .to_api_schema(Default::default())
+            .unwrap()
+            .schema()
+    ));
+}
+
+#[test]
+fn compose_handles_empty_subgraphs() {
+    let result = Supergraph::compose(vec![]);
+    assert!(
+        result.is_ok(),
+        "Composition with empty subgraphs should succeed and return empty supergraph"
+    );
+}
+
+#[test]
 fn can_compose_with_descriptions() {
     let s1 = Subgraph::parse_and_expand(
         "Subgraph1",
@@ -197,4 +255,51 @@ fn compose_removes_federation_directives() {
             .unwrap()
             .schema()
     ));
+}
+
+#[test]
+fn compose_fails_on_pre_merge_validation_errors() {
+    // Test that composition fails during pre-merge validation due to duplicate subgraph names
+    let s1 = Subgraph::parse_and_expand(
+        "SubgraphA",
+        "https://subgraph1",
+        r#"
+            type Query {
+                user(id: ID!): User
+            }
+
+            type User @key(fields: "id") {
+                id: ID!
+                name: String!
+            }
+        "#,
+    )
+    .unwrap();
+
+    let s2 = Subgraph::parse_and_expand(
+        "SubgraphA",
+        "https://subgraph2",
+        r#"
+            type Query {
+                profile(id: ID!): Profile
+            }
+
+            type Profile @key(fields: "id") {
+                id: ID!
+                email: String!
+            }
+        "#,
+    )
+    .unwrap();
+
+    // Composition should fail due to pre-merge validation errors (duplicate names)
+    let result = Supergraph::compose(vec![&s1, &s2]);
+
+    assert!(
+        result.is_err(),
+        "Composition should fail when subgraphs have duplicate names"
+    );
+
+    // Use insta to snapshot the error for verification
+    insta::assert_debug_snapshot!(result);
 }

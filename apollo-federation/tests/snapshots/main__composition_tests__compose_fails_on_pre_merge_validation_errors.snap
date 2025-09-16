@@ -1,0 +1,12 @@
+---
+source: apollo-federation/tests/composition_tests.rs
+expression: result
+---
+Err(
+    MergeFailure {
+        errors: [
+            "A subgraph named \"SubgraphA\" already exists",
+        ],
+        composition_hints: [],
+    },
+)

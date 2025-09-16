@@ -134,8 +134,27 @@ impl Supergraph<Merged> {
         Ok(Self::new(schema))
     }
 
-    pub fn assume_satisfiable(self) -> Supergraph<Satisfiable> {
-        todo!("unimplemented")
+    pub fn assume_satisfiable(self) -> Result<Supergraph<Satisfiable>, FederationError> {
+        // Construct a ValidFederationSchema from the merged Valid<Schema>.
+        // ValidFederationSchema::new(...) returns Result<ValidFederationSchema, FederationError>.
+        let vfs = ValidFederationSchema::new(self.state.schema.clone())?;
+
+        // Move the hints into the Satisfiable state:
+        let hints = self.state.hints;
+
+        // Build and return Supergraph<Satisfiable>
+        Ok(Supergraph::<Satisfiable>::new(vfs, hints))
+    }
+    /// Convenience unchecked variant: panics if conversion fails.
+    /// Use only if you intentionally want a hard failure on an unexpected conversion problem.
+    pub fn assume_satisfiable_unchecked(self) -> Supergraph<Satisfiable> {
+        match self.assume_satisfiable() {
+            Ok(sg) => sg,
+            Err(e) => panic!(
+                "assume_satisfiable_unchecked: failed to convert merged schema to ValidFederationSchema: {:?}",
+                e
+            ),
+        }
     }
 
     pub fn schema(&self) -> &Valid<Schema> {

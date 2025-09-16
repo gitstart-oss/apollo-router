@@ -1,4 +1,5 @@
 mod satisfiability;
+
 use crate::ValidFederationSchema;
 use crate::ValidFederationSubgraph;
 use crate::ValidFederationSubgraphs;
@@ -14,27 +15,80 @@ use crate::subgraph::typestate::Validated;
 pub use crate::supergraph::Merged;
 pub use crate::supergraph::Satisfiable;
 pub use crate::supergraph::Supergraph;
+use crate::supergraph::CompositionHint;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::vec;
 
-pub fn compose(
+/// Toggle composition behavior (this mirrors JS `CompositionOptions`).
+pub struct CompositionOptions {
+    pub run_satisfiability: bool,
+}
+
+impl Default for CompositionOptions {
+    fn default() -> Self {
+        Self {
+            run_satisfiability: true,
+        }
+    }
+}
+
+/// Validate composition options (placeholder for rules like rejecting unsupported subtyping rules).
+fn validate_composition_options(_options: &CompositionOptions) -> Result<(), CompositionError> {
+    // In the JS implementation there's a guard against "list_upgrade" being present in
+    // TODO: FED-570, we might want to add similar guards here if we add more options.
+    // validate it here. For now, it's a no-op.
+    Ok(())
+}
+
+/// High-level compose function (convenience wrapper that runs satisfiability by default).
+pub fn compose_with_options(
     subgraphs: Vec<Subgraph<Initial>>,
+    options: CompositionOptions,
 ) -> Result<Supergraph<Satisfiable>, Vec<CompositionError>> {
+    // Validate options early
+    if let Err(e) = validate_composition_options(&options) {
+        return Err(vec![e]);
+    }
+
     let expanded_subgraphs = expand_subgraphs(subgraphs)?;
     let upgraded_subgraphs = upgrade_subgraphs_if_necessary(expanded_subgraphs)?;
     let validated_subgraphs = validate_subgraphs(upgraded_subgraphs)?;
-
+    // pre-merge checks
     pre_merge_validations(&validated_subgraphs)?;
-    let supergraph = merge_subgraphs(validated_subgraphs)?;
-    post_merge_validations(&supergraph)?;
-    validate_satisfiability(supergraph)
+
+    // merge
+    let merged_supergraph = merge_subgraphs(validated_subgraphs)?;
+
+    // post-merge validation of the merged SDL/schema
+    post_merge_validations(&merged_supergraph)?;
+    // If requested, run satisfiability checks and return a Satisfiable supergraph.
+    if options.run_satisfiability {
+        validate_satisfiability(merged_supergraph)
+    } else {
+        // Try best-effort conversion to a Satisfiable supergraph without running the full satisfiability check.]
+        match ValidFederationSchema::new(merged_supergraph.state.schema().clone()) {
+            Ok(vfs) => {
+                // build Satisfiable supergraph with any hints (we don't currently have satisfiability hints here)
+                Ok(Supergraph::<Satisfiable>::new(vfs, Vec::<CompositionHint>::new()))
+            }
+            Err(e) => Err(vec![CompositionError::InternalError {
+                message: format!("failed to construct ValidFederationSchema: {:?}", e),
+            }]),
+        }
+    }
 }
 
-/// Apollo Federation allow subgraphs to specify partial schemas (i.e. "import" directives through
-/// `@link`). This function will update subgraph schemas with all missing federation definitions.
+/// Convenience: preserve prior default behavior (runs satisfiability).
+pub fn compose(subgraphs: Vec<Subgraph<Initial>>) -> Result<Supergraph<Satisfiable>, Vec<CompositionError>> {
+    compose_with_options(subgraphs, CompositionOptions::default())
+}
+
+/// --- Subgraph lifecycle helpers (expand, validate) ---
+
+/// Populate default federation definitions / link imports for subgraphs.
 pub fn expand_subgraphs(
     subgraphs: Vec<Subgraph<Initial>>,
 ) -> Result<Vec<Subgraph<Expanded>>, Vec<CompositionError>> {
@@ -44,6 +98,7 @@ pub fn expand_subgraphs(
         .map(|s| s.expand_links())
         .filter_map(|r| r.map_err(|e| errors.push(e.into())).ok())
         .collect();
+
     if errors.is_empty() {
         Ok(expanded)
     } else {
@@ -51,8 +106,7 @@ pub fn expand_subgraphs(
     }
 }
 
-/// Validate subgraph schemas to ensure they satisfy Apollo Federation requirements (e.g. whether
-/// `@key` specifies valid `FieldSet`s etc).
+/// Validate each subgraph (e.g., @key FieldSet checks).
 pub fn validate_subgraphs(
     subgraphs: Vec<Subgraph<Upgraded>>,
 ) -> Result<Vec<Subgraph<Validated>>, Vec<CompositionError>> {
@@ -62,6 +116,7 @@ pub fn validate_subgraphs(
         .map(|s| s.validate())
         .filter_map(|r| r.map_err(|e| errors.push(e.into())).ok())
         .collect();
+
     if errors.is_empty() {
         Ok(validated)
     } else {
@@ -69,11 +124,8 @@ pub fn validate_subgraphs(
     }
 }
 
-/// Perform validations that require information about all available subgraphs.
-/// how to access a Subgraph's schema/types (see comments below).
-pub fn pre_merge_validations(
-    subgraphs: &[Subgraph<Validated>],
-) -> Result<(), Vec<CompositionError>> {
+/// Pre-merge validations: duplicate/empty subgraph names etc.
+pub fn pre_merge_validations(subgraphs: &[Subgraph<Validated>]) -> Result<(), Vec<CompositionError>> {
     let mut errors: Vec<CompositionError> = Vec::new();
 
     // Duplicate-name / empty-name check
@@ -92,42 +144,27 @@ pub fn pre_merge_validations(
             });
         }
     }
-    // Optional: simple sanity check that each subgraph has at least one definition.
-    // for sg in subgraphs.iter() {
-    //     let type_count = sg.type_count();
-    //     if type_count == 0 {
-    //         errors.push(CompositionError::InternalError {
-    //             message: format!("subgraph '{}' has no type definitions", &sg.name),
-    //         });
-    //     }
-    // }
 
     if errors.is_empty() {
         Ok(())
     } else {
-        Err(vec![CompositionError::InternalError {
-            message: "pre_merge_validations is not implemented yet".to_string(),
-        }])
+        Err(errors)
     }
 }
-pub struct MergeResult {
-    pub supergraph: Supergraph<Merged>,
-    pub hints: Vec<String>, // optional, port from Node `hints`
-}
-fn to_valid_federation_subgraph(
-    sg: Subgraph<Validated>,
-) -> Result<ValidFederationSubgraph, CompositionError> {
+
+
+/// --- Helpers to convert the validated Subgraph list into ValidFederationSubgraphs expected by the merger ---
+fn to_valid_federation_subgraph(sg: Subgraph<Validated>) -> Result<ValidFederationSubgraph, CompositionError> {
     let validated_schema = sg.validated_schema().clone();
     let name_string = sg.name;
     let url_string = sg.url;
-    let vfs = ValidFederationSubgraph {
-        name: name_string.clone(),
-        url: url_string,
-        schema: validated_schema,
-    };
-
-    Ok(vfs)
+        Ok(ValidFederationSubgraph {
+            name: name_string.clone(),
+            url: url_string,
+            schema: validated_schema,
+        })
 }
+
 fn vec_to_valid_federation_subgraphs(
     validated_subgraphs: Vec<Subgraph<Validated>>,
 ) -> Result<ValidFederationSubgraphs, Vec<CompositionError>> {
@@ -137,7 +174,7 @@ fn vec_to_valid_federation_subgraphs(
     for sg in validated_subgraphs.into_iter() {
         match to_valid_federation_subgraph(sg) {
             Ok(vfs) => {
-                // Create the Arc<str> key from the vfs.name (String)
+                // Create Arc<str> key and insert
                 let key: Arc<str> = Arc::from(vfs.name.clone().into_boxed_str());
                 if map.insert(key.clone(), vfs).is_some() {
                     errors.push(CompositionError::InternalError {
@@ -155,6 +192,8 @@ fn vec_to_valid_federation_subgraphs(
         Err(errors)
     }
 }
+
+/// Merge validated subgraphs into a merged supergraph schema.
 pub fn merge_subgraphs(
     validated_subgraphs: Vec<Subgraph<Validated>>,
 ) -> Result<Supergraph<Merged>, Vec<CompositionError>> {
@@ -167,10 +206,11 @@ pub fn merge_subgraphs(
     // Call the merger
     match merge_federation_subgraphs(vfs) {
         Ok(ms) => {
-            // MergeSuccess { schema: Valid<Schema>, composition_hints: Vec<MergeWarning> }
-            // Build Supergraph<Merged> from the returned Valid<Schema>
+            // ms.schema : Valid<Schema>
+            // ms.composition_hints : Vec<MergeWarning> (if available)
+            // The Supergraph<Merged>::new currently only accepts schema; composition hints
+            // can be attached into the Merged state if desired. For now we create the Supergraph.
             let sg = Supergraph::<Merged>::new(ms.schema);
-            // Optionally attach hints from ms.composition_hints into sg's hints if desired.
             Ok(sg)
         }
         Err(mf) => {
@@ -185,7 +225,6 @@ pub fn merge_subgraphs(
                     .collect();
                 Err(errs)
             } else {
-                // No structured errors — return a fallback internal error with hints if any
                 Err(vec![CompositionError::InternalError {
                     message: format!(
                         "merge_federation_subgraphs failed with no errors; composition_hints: {:?}",
@@ -197,28 +236,38 @@ pub fn merge_subgraphs(
     }
 }
 
-pub fn post_merge_validations(
-    supergraph: &Supergraph<Merged>,
-) -> Result<(), Vec<CompositionError>> {
+/// Post-merge validations: run all quick validators on the merged schema; return combined errors.
+pub fn post_merge_validations(supergraph: &Supergraph<Merged>) -> Result<(), Vec<CompositionError>> {
     let fed_schema = match ValidFederationSchema::new(supergraph.state.schema().clone()) {
         Ok(s) => s,
         Err(e) => {
             return Err(vec![CompositionError::InternalError {
                 message: format!("failed to construct ValidFederationSchema: {:?}", e),
-            }]);
+            }])
         }
     };
-
     let mut errors: Vec<CompositionError> = Vec::new();
-
-    if let Err(mut e) = validate_federation_directives_quick(&fed_schema) {
+    // directive / FieldSet validation (quick SDL based)
+    if let Err(mut e) = validate_directive_field_sets(&fed_schema) {
         errors.append(&mut e);
     }
+    // conflicting root type heuristics
     if let Err(mut e) = validate_no_conflicting_root_types_quick(&fed_schema) {
         errors.append(&mut e);
     }
-
+    if let Err(mut e) = validate_no_conflicting_root_types_enhanced(&fed_schema) {
+        errors.append(&mut e);
+    }
+    // field ownership / @requires/@provides checks
     if let Err(mut e) = validate_field_ownership_and_references_quick(&fed_schema) {
+        errors.append(&mut e);
+    }
+    // check join field type consistency across graphs (quick SDL heuristic)
+    if let Err(mut e) = validate_join_field_type_consistency_quick(&fed_schema) {
+        errors.append(&mut e);
+    }
+    // key fields existence check (ensures @key references existing fields)
+    if let Err(mut e) = validate_key_fields_exist(&fed_schema) {
         errors.append(&mut e);
     }
     if errors.is_empty() {
@@ -228,126 +277,153 @@ pub fn post_merge_validations(
     }
 }
 
-/// Try to do a cheap validation of federation directives using SDL scanning.
-///
-/// This is a pragmatic, short-term validator. It will catch:
-///  - @key without `fields`
-///  - @key/@requires/@provides whose `fields` value fails a simple FieldSet parse
-///
-/// It will NOT correctly implement the full FieldSet grammar or ownership rules.
-/// Use AST-based validators for production correctness later.
-pub fn validate_federation_directives_quick(
+
+/// ---------------------------------------------------------------------------
+/// --- Validators / helpers (SDL-based should look into AST) -------
+/// ---------------------------------------------------------------------------
+/// 
+/// 
+/// 
+/// Return a mapping: type name -> set of field names for quick existence checks.
+fn get_type_fields_map_from_sdl(sdl: &str) -> HashMap<String, HashSet<String>> {
+    let mut type_fields: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut rest = sdl;
+
+    while let Some(pos) = rest.find("type ") {
+        rest = &rest[pos + "type ".len()..];
+        if let Some((header, after_brace)) = rest.split_once('{') {
+            let type_name = header.trim().split_whitespace().next().unwrap_or("").to_string();
+            if let Some(body_end_pos) = after_brace.find('}') {
+                let body = &after_brace[..body_end_pos];
+                let mut fields = HashSet::new();
+                for line in body.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() || trimmed.starts_with('#') || !trimmed.contains(':') {
+                        continue;
+                    }
+                    if let Some((field_name, _)) = trimmed.split_once(':') {
+                        let field_name = field_name.trim().to_string();
+                        if !field_name.is_empty() {
+                            fields.insert(field_name);
+                        }
+                    }
+                }
+                type_fields.insert(type_name, fields);
+                rest = &after_brace[body_end_pos + 1..];
+            } else {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+
+    type_fields
+}
+
+/// Validate @key / @requires / @provides directive field sets and field existence (SDL-based).
+pub fn validate_directive_field_sets(
     fed_schema: &ValidFederationSchema,
 ) -> Result<(), Vec<CompositionError>> {
-    // 1) Get SDL from the schema. Adapt `get_sdl_from_valid_fed_schema` if your code exposes a printer.
     let sdl = match get_sdl_from_valid_fed_schema(fed_schema) {
         Ok(s) => s,
         Err(e) => {
             return Err(vec![CompositionError::InternalError {
                 message: format!("could not obtain SDL from supergraph schema: {}", e),
-            }]);
+            }])
         }
     };
 
-    // 2) Find type blocks and validate directives inside them
+    let type_fields = get_type_fields_map_from_sdl(&sdl);
     let mut errors: Vec<CompositionError> = Vec::new();
 
-    // A very small regex-free scanner: find "type NAME { ... }" blocks.
-    // This is simple and won't handle every GraphQL construct (e.g., comments, complex directives across lines),
-    // but is sufficient for quick checks.
-    let mut chars = sdl.as_str();
+    let mut chars = &sdl[..];
     while let Some(type_idx) = chars.find("type ") {
         chars = &chars[type_idx + "type ".len()..];
-        // read type name
         if let Some(rest) = chars.split_once('{') {
             let header = rest.0.trim();
-            // header may contain "TypeName implements X & Y" or directives — take first token as name
             let type_name = header.split_whitespace().next().unwrap_or("<unknown>");
 
-            // find matching closing brace for the block
-            if let Some(mut depth_pos) = rest.1.find('}') {
-                // crude: assume first '}' ends block. For nested braces we should track depth,
-                // but GraphQL type bodies don't nest braces for fields (except for selection sets inside directives).
+            if let Some(depth_pos) = rest.1.find('}') {
                 let body = &rest.1[..depth_pos];
 
-                // Now scan body for directives lines
-                // Check @key usages that appear either on type header (we scanned header) or in body (extensions)
-                // Quick check: Look for "@key(" in header and body and ensure `fields:` appears.
                 for place in [&header, body] {
                     for key_pos in place.match_indices("@key") {
-                        // look ahead for "fields"
                         let after = &place[key_pos.0..];
                         if !after.contains("fields") {
                             errors.push(CompositionError::InternalError {
-                                message: format!(
-                                    "@key on type '{}' missing `fields` argument",
-                                    type_name
-                                ),
+                                message: format!("@key on type '{}' missing `fields` argument", type_name),
                             });
                         } else {
-                            // attempt to extract the fields string between parentheses if present
                             if let Some(opt_fields) = extract_directive_arg_str(after, "fields") {
                                 if let Err(e) = parse_field_set_string(&opt_fields) {
                                     errors.push(CompositionError::InternalError {
-                                        message: format!(
-                                            "invalid FieldSet in @key on '{}': {}",
-                                            type_name, e
-                                        ),
+                                        message: format!("invalid FieldSet in @key on '{}': {}", type_name, e),
                                     });
+                                }
+                                if let Some(fields) = type_fields.get(type_name) {
+                                    for token in opt_fields.split_whitespace() {
+                                        if token.is_empty() {
+                                            continue;
+                                        }
+                                        let field_name = token.split('.').next().unwrap_or("").trim();
+                                        if !field_name.is_empty() && !fields.contains(field_name) {
+                                            errors.push(CompositionError::InternalError {
+                                                message: format!("field '{}' in @key on '{}' does not exist", field_name, type_name),
+                                            });
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
 
-                    // check @requires and @provides occurrences in the body (field-level)
-                    // We look for occurrences like "fieldName(...) @requires(fields: \"a b\")"
-                    // crude approach: split body into lines and scan each line
                     for line in place.lines() {
                         if line.contains("@requires") {
                             if let Some(arg) = extract_directive_arg_str(line, "fields") {
                                 if let Err(e) = parse_field_set_string(&arg) {
                                     errors.push(CompositionError::InternalError {
-                                        message: format!(
-                                            "invalid FieldSet in @requires on '{}': {}",
-                                            type_name, e
-                                        ),
+                                        message: format!("invalid FieldSet in @requires on '{}': {}", type_name, e),
                                     });
+                                }
+                                if let Some(fields) = type_fields.get(type_name) {
+                                    for token in arg.split_whitespace() {
+                                        if token.is_empty() {
+                                            continue;
+                                        }
+                                        let field_name = token.split('.').next().unwrap_or("").trim();
+                                        if !field_name.is_empty() && !fields.contains(field_name) {
+                                            errors.push(CompositionError::InternalError {
+                                                message: format!("field '{}' in @requires on '{}' does not exist", field_name, type_name),
+                                            });
+                                        }
+                                    }
                                 }
                             } else {
                                 errors.push(CompositionError::InternalError {
-                                    message: format!(
-                                        "@requires on type '{}' has no `fields` argument",
-                                        type_name
-                                    ),
+                                    message: format!("@requires on type '{}' has no `fields` argument", type_name),
                                 });
                             }
                         }
+
                         if line.contains("@provides") {
                             if let Some(arg) = extract_directive_arg_str(line, "fields") {
                                 if let Err(e) = parse_field_set_string(&arg) {
                                     errors.push(CompositionError::InternalError {
-                                        message: format!(
-                                            "invalid FieldSet in @provides on '{}': {}",
-                                            type_name, e
-                                        ),
+                                        message: format!("invalid FieldSet in @provides on '{}': {}", type_name, e),
                                     });
                                 }
                             } else {
                                 errors.push(CompositionError::InternalError {
-                                    message: format!(
-                                        "@provides on type '{}' has no `fields` argument",
-                                        type_name
-                                    ),
+                                    message: format!("@provides on type '{}' has no `fields` argument", type_name),
                                 });
                             }
                         }
                     }
                 }
 
-                // advance chars beyond this block
                 chars = &rest.1[depth_pos + 1..];
             } else {
-                // no closing brace found — bail
                 break;
             }
         } else {
@@ -363,16 +439,13 @@ pub fn validate_federation_directives_quick(
 }
 
 /// Try multiple ways to get an SDL string from the ValidFederationSchema.
-/// Adapt this function to call any schema-printer functions your repo exposes.
 /// Returns Err(String) if none of the tried methods exist/succeed.
 fn get_sdl_from_valid_fed_schema(fed_schema: &ValidFederationSchema) -> Result<String, String> {
-    // Strategy A: if there's a crate-level printer you can call, uncomment and adapt:
+    // Preferred: call a crate-level printer if available (uncomment & adapt)
     // return Ok(crate::schema::print_schema(fed_schema.schema().clone().into_inner()));
 
-    // Strategy B: if Schema implements Display/ToString:
-    // try to clone and call to_string (may or may not exist depending on Schema API).
+    // Fallback: try to_string via panic/catch_unwind (best-effort).
     if let Ok(s) = std::panic::catch_unwind(|| {
-        // If Valid<Schema> supports `.clone().into_inner()` and Schema implements ToString:
         let schema_val = fed_schema.schema().clone();
         let inner = schema_val.into_inner();
         inner.to_string()
@@ -380,20 +453,14 @@ fn get_sdl_from_valid_fed_schema(fed_schema: &ValidFederationSchema) -> Result<S
         return Ok(s);
     }
 
-    // Could not produce SDL; return helpful message for you to adapt.
     Err("no known schema->SDL printer found; adapt get_sdl_from_valid_fed_schema to call your printer".to_string())
 }
 
 /// Extract the string value of a directive argument like fields: "a b c"
-/// scans a short substring and returns the inner string if found.
-/// Returns None if not found.
 fn extract_directive_arg_str(src: &str, arg_name: &str) -> Option<String> {
-    // look for e.g. fields: "a b c" or fields: 'a b c'
     if let Some(idx) = src.find(arg_name) {
-        // find the colon after arg_name
         if let Some(colon_pos) = src[idx..].find(':') {
             let after_colon = &src[idx + colon_pos + 1..];
-            // find first quote char
             if let Some(first_q_pos) = after_colon.find('"') {
                 let rest = &after_colon[first_q_pos + 1..];
                 if let Some(second_q_pos) = rest.find('"') {
@@ -405,7 +472,6 @@ fn extract_directive_arg_str(src: &str, arg_name: &str) -> Option<String> {
                     return Some(rest[..second_sq].to_string());
                 }
             } else {
-                // no quotes; maybe unquoted token(s) — take up to whitespace or ')'
                 let trimmed = after_colon.trim_start();
                 let mut end = trimmed.len();
                 for (i, c) in trimmed.char_indices() {
@@ -423,17 +489,38 @@ fn extract_directive_arg_str(src: &str, arg_name: &str) -> Option<String> {
     None
 }
 
-/// Simple FieldSet parser used above (same as earlier).
+/// Extract an unquoted token argument value like graph: S1
+fn extract_directive_arg_token(src: &str, arg_name: &str) -> Option<String> {
+    if let Some(idx) = src.find(arg_name) {
+        if let Some(colon_pos) = src[idx..].find(':') {
+            let after_colon = &src[idx + colon_pos + 1..];
+            let trimmed = after_colon.trim_start();
+            let mut end = trimmed.len();
+            for (i, c) in trimmed.char_indices() {
+                if c == ',' || c == ')' || c.is_whitespace() {
+                    end = i;
+                    break;
+                }
+            }
+            if end > 0 {
+                let tok = trimmed[..end].trim().trim_matches('"').trim_matches('\'').to_string();
+                if !tok.is_empty() {
+                    return Some(tok);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Simple FieldSet parser used above (very small subset).
 fn parse_field_set_string(input: &str) -> Result<Vec<Vec<String>>, String> {
     let mut result: Vec<Vec<String>> = Vec::new();
     for token in input.split_whitespace() {
         if token.is_empty() {
             continue;
         }
-        if token
-            .chars()
-            .any(|c| c == '(' || c == ')' || c == '{' || c == '}')
-        {
+        if token.chars().any(|c| c == '(' || c == ')' || c == '{' || c == '}') {
             return Err("unsupported FieldSet token (contains braces/paren)".to_string());
         }
         let path: Vec<String> = token.split('.').map(|s| s.to_string()).collect();
@@ -445,9 +532,7 @@ fn parse_field_set_string(input: &str) -> Result<Vec<Vec<String>>, String> {
     Ok(result)
 }
 
-/// Quick heuristic: detect conflicting definitions for the same type name.
-/// It compares the textual bodies (whitespace-normalized). If type `Foo` appears
-/// more than once with different bodies we consider that a conflict.
+/// Quick heuristic to detect conflicting type definitions across subgraphs.
 pub fn validate_no_conflicting_root_types_quick(
     fed_schema: &ValidFederationSchema,
 ) -> Result<(), Vec<CompositionError>> {
@@ -456,23 +541,19 @@ pub fn validate_no_conflicting_root_types_quick(
         Err(e) => {
             return Err(vec![CompositionError::InternalError {
                 message: format!("could not obtain SDL for conflict check: {}", e),
-            }]);
+            }])
         }
     };
 
-    // Map: type_name -> normalized body string (first occurrence)
     let mut seen: HashMap<String, String> = HashMap::new();
     let mut errors: Vec<CompositionError> = Vec::new();
-
-    // crude parser: find "type <Name> { ... }" blocks and capture the inside as body
     let mut rest = sdl.as_str();
+
     while let Some(pos) = rest.find("type ") {
         rest = &rest[pos + "type ".len()..];
-        // get up to next '{'
         if let Some((header, after_brace)) = rest.split_once('{') {
             let header = header.trim();
             let type_name = header.split_whitespace().next().unwrap_or("").to_string();
-            // find the matching '}' for this block (simple first '}' in remainder)
             if let Some(body_end_pos) = after_brace.find('}') {
                 let body = &after_brace[..body_end_pos];
                 let normalized = normalize_whitespace(body);
@@ -501,14 +582,76 @@ pub fn validate_no_conflicting_root_types_quick(
     }
 }
 
+/// Enhanced conflicting-field-type detection across occurrences in the SDL.
+pub fn validate_no_conflicting_root_types_enhanced(
+    fed_schema: &ValidFederationSchema,
+) -> Result<(), Vec<CompositionError>> {
+    let sdl = match get_sdl_from_valid_fed_schema(fed_schema) {
+        Ok(s) => s,
+        Err(e) => return Err(vec![CompositionError::InternalError { message: e }]),
+    };
+
+    let mut type_fields: HashMap<String, HashMap<String, String>> = HashMap::new();
+    let mut errors: Vec<CompositionError> = Vec::new();
+    let mut rest = &sdl[..];
+
+    while let Some(pos) = rest.find("type ") {
+        rest = &rest[pos + "type ".len()..];
+        if let Some((header, after_brace)) = rest.split_once('{') {
+            let type_name = header.trim().split_whitespace().next().unwrap_or("").to_string();
+            let type_name_clone = type_name.clone();
+            if let Some(body_end_pos) = after_brace.find('}') {
+                let body = &after_brace[..body_end_pos];
+                for line in body.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() || trimmed.starts_with('#') || !trimmed.contains(':') {
+                        continue;
+                    }
+                    if let Some((field_name, field_type_raw)) = trimmed.split_once(':') {
+                        let field_name = field_name.trim().to_string();
+                        let field_type = field_type_raw.split_whitespace().next().unwrap_or("").trim().to_string();
+                        if let Some(existing_fields) = type_fields.get_mut(&type_name_clone) {
+                            if let Some(existing_type) = existing_fields.get(&field_name) {
+                                if existing_type != &field_type {
+                                    errors.push(CompositionError::InternalError {
+                                        message: format!(
+                                            "conflicting types for field '{}.{}': {} vs {}",
+                                            type_name_clone, field_name, existing_type, field_type
+                                        ),
+                                    });
+                                }
+                            } else {
+                                existing_fields.insert(field_name, field_type);
+                            }
+                        } else {
+                            let mut fields = HashMap::new();
+                            fields.insert(field_name, field_type);
+                            type_fields.insert(type_name_clone.clone(), fields);
+                        }
+                    }
+                }
+                rest = &after_brace[body_end_pos + 1..];
+            } else {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
 /// Normalize whitespace in a string: collapse consecutive whitespace into a single space and trim.
 fn normalize_whitespace(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
-/// Quick heuristic for field ownership & references:
-/// - builds a map of type -> fields (from SDL)
-/// - for each occurrence of '@requires(fields: "...")' attached to a field
-///   in a type, ensure the referenced fields exist on the same type.
+
+/// Quick heuristic for field ownership & references (@requires / @provides).
 pub fn validate_field_ownership_and_references_quick(
     fed_schema: &ValidFederationSchema,
 ) -> Result<(), Vec<CompositionError>> {
@@ -517,14 +660,14 @@ pub fn validate_field_ownership_and_references_quick(
         Err(e) => {
             return Err(vec![CompositionError::InternalError {
                 message: format!("could not obtain SDL for ownership check: {}", e),
-            }]);
+            }])
         }
     };
 
     // First pass: build type -> set of field names
     let mut types_map: HashMap<String, HashSet<String>> = HashMap::new();
-
     let mut rest = sdl.as_str();
+
     while let Some(pos) = rest.find("type ") {
         rest = &rest[pos + "type ".len()..];
         if let Some((header, after_brace)) = rest.split_once('{') {
@@ -538,8 +681,6 @@ pub fn validate_field_ownership_and_references_quick(
                     if trimmed.is_empty() || trimmed.starts_with('#') {
                         continue;
                     }
-                    // field lines generally start with the field name: e.g. "id: ID!" or "user(id: ID): User @requires(...)"
-                    // take characters until whitespace, '(' or ':' as the field name
                     let field_name = trimmed
                         .split_whitespace()
                         .next()
@@ -564,6 +705,7 @@ pub fn validate_field_ownership_and_references_quick(
     // Second pass: find @requires usages and verify referenced fields exist on same type
     let mut errors: Vec<CompositionError> = Vec::new();
     let mut rest = sdl.as_str();
+
     while let Some(pos) = rest.find("type ") {
         rest = &rest[pos + "type ".len()..];
         if let Some((header, after_brace)) = rest.split_once('{') {
@@ -575,14 +717,12 @@ pub fn validate_field_ownership_and_references_quick(
                 for line in body.lines() {
                     if line.contains("@requires") {
                         let trimmed = line.trim();
-                        // field attached to this directive: first token
                         let field_token = trimmed
                             .split_whitespace()
                             .next()
                             .map(|tok| tok.split(&[':', '('][..]).next().unwrap_or(tok))
                             .unwrap_or("")
                             .to_string();
-                        // extract the fields arg string from the directive occurrence
                         if let Some(fields_str) = extract_directive_arg_str(trimmed, "fields") {
                             match parse_field_set_string(&fields_str) {
                                 Ok(paths) => {
@@ -619,32 +759,193 @@ pub fn validate_field_ownership_and_references_quick(
                             }
                         } else {
                             errors.push(CompositionError::InternalError {
-                                message: format!(
-                                    "@requires on '{}.{}' missing `fields` argument",
-                                    type_name, field_token
-                                ),
+                                message: format!("@requires on '{}.{}' missing `fields` argument", type_name, field_token),
                             });
                         }
                     }
 
-                    // optional: quick check for @provides (ensure referenced fields exist somewhere)
                     if line.contains("@provides") {
                         if let Some(fields_str) = extract_directive_arg_str(line, "fields") {
                             if let Err(e) = parse_field_set_string(&fields_str) {
                                 errors.push(CompositionError::InternalError {
-                                    message: format!(
-                                        "invalid FieldSet in @provides on '{}': {}",
-                                        type_name, e
-                                    ),
+                                    message: format!("invalid FieldSet in @provides on '{}': {}", type_name, e),
                                 });
                             }
                         } else {
                             errors.push(CompositionError::InternalError {
-                                message: format!(
-                                    "@provides in type '{}' missing `fields` argument",
-                                    type_name
-                                ),
+                                message: format!("@provides in type '{}' missing `fields` argument", type_name),
                             });
+                        }
+                    }
+                }
+
+                rest = &after_brace[body_end_pos + 1..];
+            } else {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
+/// Quick check that join__fields with per-graph `type:` argument are consistent across graphs.
+pub fn validate_join_field_type_consistency_quick(
+    fed_schema: &ValidFederationSchema,
+) -> Result<(), Vec<CompositionError>> {
+    let sdl = match get_sdl_from_valid_fed_schema(fed_schema) {
+        Ok(s) => s,
+        Err(e) => {
+            return Err(vec![CompositionError::InternalError {
+                message: format!("could not obtain SDL for join__field check: {}", e),
+            }])
+        }
+    };
+
+    let mut field_types_by_field: HashMap<String, HashMap<String, String>> = HashMap::new();
+    let mut errors: Vec<CompositionError> = Vec::new();
+    let mut rest = &sdl[..];
+
+    while let Some(pos) = rest.find("type ") {
+        rest = &rest[pos + "type ".len()..];
+        if let Some((header, after_brace)) = rest.split_once('{') {
+            let type_name = header.trim().split_whitespace().next().unwrap_or("").to_string();
+            if let Some(body_end_pos) = after_brace.find('}') {
+                let body = &after_brace[..body_end_pos];
+                for line in body.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() || trimmed.starts_with('#') {
+                        continue;
+                    }
+                    let field_name = trimmed
+                        .split_whitespace()
+                        .next()
+                        .map(|tok| tok.split(&[':', '('][..]).next().unwrap_or(tok))
+                        .unwrap_or("")
+                        .trim()
+                        .to_string();
+                    if field_name.is_empty() {
+                        continue;
+                    }
+
+                    let mut search = trimmed;
+                    while let Some(jpos) = search.find("@join__field") {
+                        let sub = &search[jpos..];
+                        let graph_opt = extract_directive_arg_token(sub, "graph");
+                        let type_opt = extract_directive_arg_str(sub, "type");
+
+                        if let Some(graph) = graph_opt {
+                            let type_str = type_opt.unwrap_or_else(|| "<unspecified>".to_string());
+                            let key = format!("{}.{}", type_name, field_name);
+                            field_types_by_field
+                                .entry(key.clone())
+                                .or_insert_with(HashMap::new)
+                                .insert(graph.clone(), type_str.clone());
+                        }
+
+                        if jpos + "@join__field".len() >= search.len() {
+                            break;
+                        }
+                        search = &search[jpos + "@join__field".len()..];
+                    }
+                }
+                rest = &after_brace[body_end_pos + 1..];
+            } else {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+
+    for (field_key, graph_map) in field_types_by_field.into_iter() {
+        let mut types_seen: HashSet<String> = HashSet::new();
+        for (_graph, t) in graph_map.iter() {
+            types_seen.insert(t.clone());
+        }
+        if types_seen.len() > 1 {
+            let mut per_graph: Vec<String> = graph_map.into_iter().map(|(g, t)| format!("{}: {}", g, t)).collect();
+            per_graph.sort();
+            errors.push(CompositionError::InternalError {
+                message: format!("inconsistent per-graph types for '{}': {}", field_key, per_graph.join(", ")),
+            });
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
+/// Validate that @key referenced fields actually exist (SDL based).
+pub fn validate_key_fields_exist(
+    fed_schema: &ValidFederationSchema,
+) -> Result<(), Vec<CompositionError>> {
+    let sdl = match get_sdl_from_valid_fed_schema(fed_schema) {
+        Ok(s) => s,
+        Err(e) => {
+            return Err(vec![CompositionError::InternalError {
+                message: format!("could not obtain SDL for field existence check: {}", e),
+            }])
+        }
+    };
+
+    let type_fields = get_type_fields_map_from_sdl(&sdl);
+    let mut errors: Vec<CompositionError> = Vec::new();
+    let mut rest = &sdl[..];
+
+    while let Some(pos) = rest.find("type ") {
+        rest = &rest[pos + "type ".len()..];
+        if let Some((header, after_brace)) = rest.split_once('{') {
+            let type_name = header.trim().split_whitespace().next().unwrap_or("").to_string();
+            if let Some(body_end_pos) = after_brace.find('}') {
+                let body = &after_brace[..body_end_pos];
+
+                for key_pos in header.match_indices("@key") {
+                    let after = &header[key_pos.0..];
+                    if let Some(fields_str) = extract_directive_arg_str(after, "fields") {
+                        for token in fields_str.split_whitespace() {
+                            if token.is_empty() {
+                                continue;
+                            }
+                            let field_name = token.split('.').next().unwrap_or("").trim();
+                            if let Some(fields) = type_fields.get(&type_name) {
+                                if !fields.contains(field_name) {
+                                    errors.push(CompositionError::InternalError {
+                                        message: format!("field '{}' in @key on '{}' does not exist", field_name, type_name),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+
+                for line in body.lines() {
+                    let trimmed = line.trim();
+                    for key_pos in trimmed.match_indices("@key") {
+                        let after = &trimmed[key_pos.0..];
+                        if let Some(fields_str) = extract_directive_arg_str(after, "fields") {
+                            for token in fields_str.split_whitespace() {
+                                if token.is_empty() {
+                                    continue;
+                                }
+                                let field_name = token.split('.').next().unwrap_or("").trim();
+                                if let Some(fields) = type_fields.get(&type_name) {
+                                    if !fields.contains(field_name) {
+                                        errors.push(CompositionError::InternalError {
+                                            message: format!("field '{}' in @key on '{}' does not exist", field_name, type_name),
+                                        });
+                                    }
+                                }
+                            }
                         }
                     }
                 }

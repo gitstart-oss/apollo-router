@@ -150,6 +150,50 @@ pub enum CompositionError {
     SatisfiabilityError { message: String },
     #[error("{message}")]
     MaxValidationSubgraphPathsExceeded { message: String },
+    // ---- new, specific validation variants ----
+    #[error("Empty subgraph/service name")]
+    EmptySubgraphName,
+
+    #[error("Duplicate subgraph/service name: {name}")]
+    DuplicateSubgraphName { name: String },
+
+    #[error("Type '{type_name}' has conflicting kinds across subgraphs: {kinds:?}")]
+    TypeKindConflict {
+        type_name: String,
+        kinds: Vec<String>,
+    },
+
+    #[error("Directive '@{directive}' repeatable flag conflicts across subgraphs")]
+    DirectiveRepeatableConflict { directive: String },
+
+    #[error("Directive '@{directive}' locations conflict across subgraphs")]
+    DirectiveLocationsConflict { directive: String },
+
+    #[error("Scalar '{scalar}' has conflicting @specifiedBy URLs across subgraphs: {urls:?}")]
+    ScalarSpecifiedByUrlConflict { scalar: String, urls: Vec<String> },
+
+    #[error("Invalid FieldSet for @{directive} on '{type_name}': {details}")]
+    InvalidFieldSet {
+        directive: String,
+        type_name: String,
+        details: String,
+    },
+
+    #[error("Field '{field}' referenced by @{directive} on '{type_name}' does not exist")]
+    UnknownFieldInFieldSet {
+        directive: String,
+        type_name: String,
+        field: String,
+    },
+
+    #[error("Conflicting types for field '{type_name}.{field_name}': {left} vs {right}")]
+    FieldTypeConflict {
+        type_name: String,
+        field_name: String,
+        left: String,
+        right: String,
+    },
+
     #[error("{message}")]
     InternalError { message: String },
 }
@@ -175,11 +219,23 @@ impl CompositionError {
             Self::MaxValidationSubgraphPathsExceeded { .. } => {
                 ErrorCode::MaxValidationSubgraphPathsExceeded
             }
+
+            // NEW variants → pick closest existing ErrorCode
+            Self::EmptySubgraphName => ErrorCode::TypeDefinitionInvalid,
+            Self::DuplicateSubgraphName { .. } => ErrorCode::TypeDefinitionInvalid,
+            Self::TypeKindConflict { .. } => ErrorCode::TypeKindMismatch,
+            Self::DirectiveRepeatableConflict { .. } => ErrorCode::DirectiveDefinitionInvalid,
+            Self::DirectiveLocationsConflict { .. } => ErrorCode::DirectiveDefinitionInvalid,
+            Self::ScalarSpecifiedByUrlConflict { .. } => ErrorCode::TypeDefinitionInvalid,
+            Self::InvalidFieldSet { .. } => ErrorCode::InvalidGraphQL,
+            Self::UnknownFieldInFieldSet { .. } => ErrorCode::TypeDefinitionInvalid,
+            Self::FieldTypeConflict { .. } => ErrorCode::TypeDefinitionInvalid,
+
             Self::InternalError { .. } => ErrorCode::Internal,
         }
     }
 
-    pub(crate) fn append_message(self, appendix: impl Display) -> Self {
+     pub(crate) fn append_message(self, appendix: impl Display) -> Self {
         match self {
             Self::EmptyMergedEnumType { message } => Self::EmptyMergedEnumType {
                 message: format!("{message}{appendix}"),
@@ -218,11 +274,21 @@ impl CompositionError {
             Self::InternalError { message } => Self::InternalError {
                 message: format!("{message}{appendix}"),
             },
-            // Remaining errors do not have an obvious way to appending a message, so we just return self.
-            Self::SubgraphError { .. }
+
+            // NEW variants don't contain a free-form message; return self unchanged
+            s @ (Self::EmptySubgraphName
+            | Self::DuplicateSubgraphName { .. }
+            | Self::TypeKindConflict { .. }
+            | Self::DirectiveRepeatableConflict { .. }
+            | Self::DirectiveLocationsConflict { .. }
+            | Self::ScalarSpecifiedByUrlConflict { .. }
+            | Self::InvalidFieldSet { .. }
+            | Self::UnknownFieldInFieldSet { .. }
+            | Self::FieldTypeConflict { .. }
+            | Self::SubgraphError { .. }
             | Self::InvalidGraphQLName(..)
             | Self::FromContextParseError { .. }
-            | Self::UnsupportedSpreadDirective { .. } => self,
+            | Self::UnsupportedSpreadDirective { .. }) => s,
         }
     }
 }

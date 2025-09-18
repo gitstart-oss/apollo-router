@@ -11,6 +11,8 @@ use apollo_compiler::schema::ComponentName;
 use apollo_compiler::schema::Directive;
 use apollo_compiler::schema::Type;
 
+use std::sync::Arc;
+
 use crate::LinkSpecDefinition;
 use crate::ValidFederationSchema;
 use crate::bail;
@@ -140,10 +142,30 @@ impl HasMetadata for Validated {
 /// - `Validated`: The schema has been validated according to Federation rules. Iterators over directives are
 ///   infallible at this stage.
 #[derive(Clone, Debug)]
+
 pub struct Subgraph<S> {
     pub name: String,
     pub url: String,
     pub state: S,
+    original_sdl: Arc<str>, // NEW
+}
+impl<S> Subgraph<S> {
+    #[inline]
+    pub fn original_sdl(&self) -> &str {
+        &self.original_sdl
+    }
+
+    /// Helper to rebuild the Subgraph on typestate transitions while
+    /// preserving name/url/original_sdl.
+    #[inline]
+    pub fn with_state<N>(self, state: N) -> Subgraph<N> {
+        Subgraph {
+            name: self.name,
+            url: self.url,
+            original_sdl: self.original_sdl,
+            state,
+        }
+    }
 }
 
 impl Subgraph<Initial> {
@@ -152,6 +174,15 @@ impl Subgraph<Initial> {
             name: name.to_string(),
             url: url.to_string(),
             state: Initial { schema },
+            original_sdl: Arc::from(""), // empty when unknown
+        }
+    }
+    pub fn new_with_sdl(name: &str, url: &str, schema: Schema, sdl: &str) -> Subgraph<Initial> {
+        Subgraph {
+            name: name.to_string(),
+            url: url.to_string(),
+            state: Initial { schema },
+            original_sdl: Arc::from(sdl.to_owned().into_boxed_str()),
         }
     }
 
@@ -214,6 +245,7 @@ impl Subgraph<Initial> {
             name: self.name,
             url: self.url,
             state: Expanded { schema, metadata },
+            original_sdl: self.original_sdl,
         })
     }
 
@@ -239,6 +271,7 @@ impl Subgraph<Initial> {
             name: self.name,
             url: self.url,
             state: Expanded { schema, metadata },
+            original_sdl: self.original_sdl,
         })
     }
 }
@@ -252,6 +285,7 @@ impl Subgraph<Expanded> {
                 schema: self.state.schema,
                 metadata: self.state.metadata,
             },
+            original_sdl: self.original_sdl,
         }
     }
 }
@@ -267,6 +301,7 @@ impl Subgraph<Upgraded> {
                 schema: valid_federation_schema,
                 metadata: self.state.metadata,
             },
+            original_sdl: self.original_sdl,
         })
     }
 
@@ -296,6 +331,7 @@ impl Subgraph<Upgraded> {
                 schema,
                 metadata: self.state.metadata,
             },
+            original_sdl: self.original_sdl,
         })
     }
 
@@ -366,6 +402,7 @@ impl Subgraph<Validated> {
                 schema: (*self.state.schema).clone(),
                 metadata: self.state.metadata,
             },
+            original_sdl: self.original_sdl,
         }
     }
 }

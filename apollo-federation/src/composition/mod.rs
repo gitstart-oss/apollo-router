@@ -43,7 +43,7 @@ impl Default for CompositionOptions {
 fn validate_composition_options(_options: &CompositionOptions) -> Result<(), CompositionError> {
     // In the JS implementation there's a guard against "list_upgrade" being present in
     // TODO: FED-570, we might want to add similar guards here if we add more options.
-    // validate it here. For now, it's a no-op.
+    // validating it here. For now, it's a no-op.
     Ok(())
 }
 
@@ -83,7 +83,7 @@ pub fn compose_with_options(
     }
 }
 
-/// For Convenience: preserve prior default behavior (runs satisfiability).
+/// For Convenience: preserving prior default behavior (runs satisfiability).
 pub fn compose(
     subgraphs: Vec<Subgraph<Initial>>,
 ) -> Result<Supergraph<Satisfiable>, Vec<CompositionError>> {
@@ -124,6 +124,12 @@ pub fn validate_subgraphs(
     }
 }
 
+/// ---------------------------------------------------------------------------
+/// --- Implementations -------
+/// ---------------------------------------------------------------------------
+///
+
+
 pub fn pre_merge_validations(
     subgraphs: &[Subgraph<Validated>],
 ) -> Result<(), Vec<CompositionError>> {
@@ -151,7 +157,6 @@ pub fn pre_merge_validations(
 
     // 2) Per-subgraph validations
     for sg in subgraphs {
-        // 2b (AST-based): collect directive definition repeatable/locations directly from schema
         {
             let schema = sg.schema().schema();
             for (_k, def) in schema.directive_definitions.iter() {
@@ -163,8 +168,6 @@ pub fn pre_merge_validations(
                 dir_defs.entry(name).or_default().push((repeatable, locs));
             }
         }
-
-        // 2c (AST-based): collect scalar @specifiedBy(url: "...") values
         // 2c (AST-based): collect scalar @specifiedBy(url: "...") values
         {
             let schema = sg.schema().schema();
@@ -217,7 +220,7 @@ pub fn pre_merge_validations(
                 }
             }
         }
-        // Try SDL (kept for other quick text-based heuristics)
+        // Trying SDL (kept for other quick text-based heuristics)
         let sdl = match subgraph_sdl(sg) {
             Ok(s) => s,
             Err(e) => {
@@ -398,7 +401,6 @@ pub fn pre_merge_validations(
 
     // 3) Cross-subgraph conflict reporting
 
-    // Type-kind conflicts
     for (ty, kinds) in type_kinds {
         if kinds.len() > 1 {
             errors.push(CompositionError::TypeKindConflict {
@@ -457,7 +459,7 @@ pub fn merge_subgraphs(
             let sg = Supergraph::<Merged>::new(ms.schema);
             Ok(MergeOutput {
                 supergraph: sg,
-                hints: ms.composition_hints, // ← now types match
+                hints: ms.composition_hints, 
             })
         }
         Err(mf) => {
@@ -522,6 +524,9 @@ pub fn post_merge_validations(
         Err(errors)
     }
 }
+
+
+
 
 /// ---------------------------------------------------------------------------
 /// --- Validators / helpers (SDL-based should look into AST) -------

@@ -309,7 +309,7 @@ fn test_subgraph_merge_produces_valid_supergraph() {
         "reviews",
         "https://reviews.example.com", 
         r#"
-            extend schema @link(url: "https://specs.apollo.dev/federation/v2.5", import: ["@key"])
+            extend schema @link(url: "https://specs.apollo.dev/federation/v2.5", import: ["@key", "@external"])
             
             type Review {
                 id: ID!
@@ -394,7 +394,7 @@ fn test_end_to_end_composition_pipeline() {
         "posts",
         "https://posts.example.com",
         r#"
-            extend schema @link(url: "https://specs.apollo.dev/federation/v2.5", import: ["@key"])
+            extend schema @link(url: "https://specs.apollo.dev/federation/v2.5", import: ["@key", "@external"])
             
             type Post {
                 id: ID!
@@ -604,7 +604,7 @@ fn test_compose_end_to_end_with_options() {
         "posts",
         "https://posts.example.com",
         r#"
-            extend schema @link(url: "https://specs.apollo.dev/federation/v2.5", import: ["@key"])
+            extend schema @link(url: "https://specs.apollo.dev/federation/v2.5", import: ["@key", "@external"])
             
             type Post {
                 id: ID!
@@ -684,7 +684,7 @@ fn test_composition_handles_multiple_entities_per_subgraph() {
         "#,
         "reviews",
         r#"
-        extend schema @link(url: "https://specs.apollo.dev/federation/v2.5", import: ["@key"])
+        extend schema @link(url: "https://specs.apollo.dev/federation/v2.5", import: ["@key", "@external"])
         
         extend type Product @key(fields: "id") { 
             id: ID! @external 

@@ -2,6 +2,7 @@ mod satisfiability;
 
 use std::vec;
 
+use crate::ValidFederationSchema;
 pub use crate::composition::satisfiability::validate_satisfiability;
 use crate::error::CompositionError;
 pub use crate::schema::schema_upgrader::upgrade_subgraphs_if_necessary;
@@ -10,21 +11,73 @@ use crate::subgraph::typestate::Initial;
 use crate::subgraph::typestate::Subgraph;
 use crate::subgraph::typestate::Upgraded;
 use crate::subgraph::typestate::Validated;
+use crate::supergraph::CompositionHint;
 pub use crate::supergraph::Merged;
 pub use crate::supergraph::Satisfiable;
 pub use crate::supergraph::Supergraph;
 
-pub fn compose(
+pub struct CompositionOptions {
+    /// Whether to run satisfiability checks after composition. Default: `true`.
+    pub run_satisfiability: bool,
+}
+pub struct MergeResult {
+    pub supergraph: Supergraph<Merged>,
+    pub hints: Vec<String>,
+}
+
+impl Default for CompositionOptions {
+    fn default() -> Self {
+        Self {
+            run_satisfiability: true,
+        }
+    }
+}
+
+fn validate_options(_options: &CompositionOptions) -> Result<(), CompositionError> {
+    // Since this could potentially grow in complexity, we can validate other options here.
+    Ok(())
+}
+
+pub fn _compose(
     subgraphs: Vec<Subgraph<Initial>>,
+    options: CompositionOptions,
 ) -> Result<Supergraph<Satisfiable>, Vec<CompositionError>> {
+    if let Err(e) = validate_options(&options) {
+        return Err(vec![e]);
+    }
+
     let expanded_subgraphs = expand_subgraphs(subgraphs)?;
     let upgraded_subgraphs = upgrade_subgraphs_if_necessary(expanded_subgraphs)?;
     let validated_subgraphs = validate_subgraphs(upgraded_subgraphs)?;
 
     pre_merge_validations(&validated_subgraphs)?;
-    let supergraph = merge_subgraphs(validated_subgraphs)?;
-    post_merge_validations(&supergraph)?;
-    validate_satisfiability(supergraph)
+    let MergeResult {
+        supergraph: merged_supergraph,
+        hints: _merge_hints,
+    } = merge_subgraphs(validated_subgraphs)?;
+    post_merge_validations(&merged_supergraph)?;
+
+    if options.run_satisfiability {
+        let satisfiable = validate_satisfiability(merged_supergraph)?;
+        Ok(satisfiable)
+    } else {
+        let vfs =
+            ValidFederationSchema::new(merged_supergraph.state.schema().clone()).map_err(|e| {
+                vec![CompositionError::InternalError {
+                    message: format!("failed to construct ValidFederationSchema: {:?}", e),
+                }]
+            })?;
+        Ok(Supergraph::<Satisfiable>::new(
+            vfs,
+            Vec::<CompositionHint>::new(),
+        ))
+    }
+}
+
+pub fn compose(
+    subgraphs: Vec<Subgraph<Initial>>,
+) -> Result<Supergraph<Satisfiable>, Vec<CompositionError>> {
+    _compose(subgraphs, CompositionOptions::default())
 }
 
 /// Apollo Federation allow subgraphs to specify partial schemas (i.e. "import" directives through
@@ -74,7 +127,7 @@ pub fn pre_merge_validations(
 
 pub fn merge_subgraphs(
     _subgraphs: Vec<Subgraph<Validated>>,
-) -> Result<Supergraph<Merged>, Vec<CompositionError>> {
+) -> Result<MergeResult, Vec<CompositionError>> {
     Err(vec![CompositionError::InternalError {
         message: "merge_subgraphs is not implemented yet".to_string(),
     }])

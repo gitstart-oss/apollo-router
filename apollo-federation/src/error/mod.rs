@@ -152,6 +152,75 @@ pub enum CompositionError {
     MaxValidationSubgraphPathsExceeded { message: String },
     #[error("{message}")]
     InternalError { message: String },
+    
+    // ===== Composition-specific validation errors =====
+    
+    // Pre-merge validation errors
+    #[error("Subgraph name cannot be empty")]
+    EmptySubgraphName,
+    
+    #[error("Duplicate subgraph name: '{name}'")]
+    DuplicateSubgraphName { name: String },
+    
+    #[error("Type '{type_name}' has conflicting definitions across subgraphs: {conflicts}")]
+    ConflictingTypeDefinitions { 
+        type_name: String, 
+        conflicts: String 
+    },
+    
+    #[error("Field '{type_name}.{field_name}' has conflicting types: {details}")]
+    ConflictingFieldTypes {
+        type_name: String,
+        field_name: String,
+        details: String,
+    },
+    
+    #[error("Directive '@{directive_name}' has conflicting definitions: {details}")]
+    ConflictingDirectiveDefinitions { 
+        directive_name: String,
+        details: String 
+    },
+    
+    #[error("Invalid field set '{field_set}' in @{directive} on {location}: {reason}")]
+    InvalidFieldSet {
+        directive: String,
+        location: String,
+        field_set: String,
+        reason: String,
+    },
+    
+    #[error("Field '{field}' referenced in @{directive} field set does not exist on type '{type_name}'")]
+    FieldSetReferencesNonexistentField {
+        directive: String,
+        type_name: String,
+        field: String,
+    },
+    
+    #[error("Type '{type_name}' is defined as {actual_kind} but expected {expected_kind}")]
+    TypeKindConflict {
+        type_name: String,
+        actual_kind: String,
+        expected_kind: String,
+    },
+    
+    // Post-merge validation errors
+    #[error("Supergraph schema validation failed: {details}")]
+    SupergraphValidationFailed { details: String },
+    
+    #[error("Join directive validation failed: {details}")]
+    JoinDirectiveValidationFailed { details: String },
+    
+    #[error("Entity key validation failed for type '{type_name}': {reason}")]
+    EntityKeyValidationFailed {
+        type_name: String,
+        reason: String,
+    },
+    
+    #[error("Entity '{entity_name}' with key '{key_fields}' is not resolvable from any subgraph")]
+    EntityNotResolvable {
+        entity_name: String,
+        key_fields: String,
+    },
 }
 
 impl CompositionError {
@@ -176,6 +245,20 @@ impl CompositionError {
                 ErrorCode::MaxValidationSubgraphPathsExceeded
             }
             Self::InternalError { .. } => ErrorCode::Internal,
+            
+            // Composition-specific error codes
+            Self::EmptySubgraphName => ErrorCode::TypeDefinitionInvalid,
+            Self::DuplicateSubgraphName { .. } => ErrorCode::TypeDefinitionInvalid,
+            Self::ConflictingTypeDefinitions { .. } => ErrorCode::TypeKindMismatch,
+            Self::ConflictingFieldTypes { .. } => ErrorCode::TypeDefinitionInvalid,
+            Self::ConflictingDirectiveDefinitions { .. } => ErrorCode::DirectiveDefinitionInvalid,
+            Self::InvalidFieldSet { .. } => ErrorCode::InvalidGraphQL,
+            Self::FieldSetReferencesNonexistentField { .. } => ErrorCode::TypeDefinitionInvalid,
+            Self::TypeKindConflict { .. } => ErrorCode::TypeKindMismatch,
+            Self::SupergraphValidationFailed { .. } => ErrorCode::TypeDefinitionInvalid,
+            Self::JoinDirectiveValidationFailed { .. } => ErrorCode::DirectiveDefinitionInvalid,
+            Self::EntityKeyValidationFailed { .. } => ErrorCode::TypeDefinitionInvalid,
+            Self::EntityNotResolvable { .. } => ErrorCode::SatisfiabilityError,
         }
     }
 
@@ -218,11 +301,41 @@ impl CompositionError {
             Self::InternalError { message } => Self::InternalError {
                 message: format!("{message}{appendix}"),
             },
+            // Errors with structured message fields
+            Self::ConflictingTypeDefinitions { type_name, conflicts } => Self::ConflictingTypeDefinitions {
+                type_name,
+                conflicts: format!("{conflicts}{appendix}"),
+            },
+            Self::ConflictingFieldTypes { type_name, field_name, details } => Self::ConflictingFieldTypes {
+                type_name,
+                field_name,
+                details: format!("{details}{appendix}"),
+            },
+            Self::ConflictingDirectiveDefinitions { directive_name, details } => Self::ConflictingDirectiveDefinitions {
+                directive_name,
+                details: format!("{details}{appendix}"),
+            },
+            Self::SupergraphValidationFailed { details } => Self::SupergraphValidationFailed {
+                details: format!("{details}{appendix}"),
+            },
+            Self::JoinDirectiveValidationFailed { details } => Self::JoinDirectiveValidationFailed {
+                details: format!("{details}{appendix}"),
+            },
+            Self::EntityKeyValidationFailed { type_name, reason } => Self::EntityKeyValidationFailed {
+                type_name,
+                reason: format!("{reason}{appendix}"),
+            },
             // Remaining errors do not have an obvious way to appending a message, so we just return self.
             Self::SubgraphError { .. }
             | Self::InvalidGraphQLName(..)
             | Self::FromContextParseError { .. }
-            | Self::UnsupportedSpreadDirective { .. } => self,
+            | Self::UnsupportedSpreadDirective { .. }
+            | Self::EmptySubgraphName
+            | Self::DuplicateSubgraphName { .. }
+            | Self::InvalidFieldSet { .. }
+            | Self::FieldSetReferencesNonexistentField { .. }
+            | Self::TypeKindConflict { .. }
+            | Self::EntityNotResolvable { .. } => self,
         }
     }
 }

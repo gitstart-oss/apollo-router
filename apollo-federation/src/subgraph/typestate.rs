@@ -49,6 +49,7 @@ use crate::schema::type_and_directive_specification::ResolvedArgumentSpecificati
 use crate::schema::type_and_directive_specification::TypeAndDirectiveSpecification;
 use crate::schema::type_and_directive_specification::UnionTypeSpecification;
 use crate::subgraph::SubgraphError;
+use crate::subgraph::ValidSubgraph;
 use crate::supergraph::ANY_TYPE_SPEC;
 use crate::supergraph::EMPTY_QUERY_TYPE_SPEC;
 use crate::supergraph::FEDERATION_ANY_TYPE_NAME;
@@ -366,6 +367,14 @@ impl Subgraph<Validated> {
                 schema: (*self.state.schema).clone(),
                 metadata: self.state.metadata,
             },
+        }
+    }
+
+    pub fn to_valid_subgraph(&self) -> ValidSubgraph {
+        ValidSubgraph {
+            name: self.name.clone(),
+            url: self.url.clone(),
+            schema: self.validated_schema().schema().clone(),
         }
     }
 }
